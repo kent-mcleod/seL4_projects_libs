@@ -47,10 +47,15 @@ file(
         sources
         src/*.c
         src/arch/${KernelArch}/*.c
-        src/arch/${KernelArch}/vgic/*.c
         src/arch/${KernelArch}/i8259/*.c
         src/arch/${KernelArch}/processor/*.c
         src/sel4_arch/${KernelSel4Arch}/*.c
+)
+
+list(
+    APPEND
+        sources
+        src/arch/${KernelArch}/vgic/vgic.c
 )
 
 add_library(sel4vm STATIC EXCLUDE_FROM_ALL ${sources})
