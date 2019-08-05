@@ -54,21 +54,7 @@
 #include "vgicv2_defs.h"
 #include "vm.h"
 #include "../fault.h"
-
-//#define DEBUG_IRQ
-//#define DEBUG_DIST
-
-#ifdef DEBUG_IRQ
-#define DIRQ(...) do{ printf("VDIST: "); printf(__VA_ARGS__); }while(0)
-#else
-#define DIRQ(...) do{}while(0)
-#endif
-
-#ifdef DEBUG_DIST
-#define DDIST(...) do{ printf("VDIST: "); printf(__VA_ARGS__); }while(0)
-#else
-#define DDIST(...) do{}while(0)
-#endif
+#include "vdist.h"
 
 /* FIXME these should be defined in a way that is friendlier to extension. */
 #if defined(CONFIG_PLAT_EXYNOS5)
@@ -105,9 +91,6 @@
 /* GIC Distributor register access utilities */
 #define GIC_DIST_REGN(offset, reg) ((offset-reg)/sizeof(uint32_t))
 #define RANGE32(a, b) a ... b + (sizeof(uint32_t)-1)
-
-#define IRQ_IDX(irq) ((irq) / 32)
-#define IRQ_BIT(irq) (1U << ((irq) % 32))
 
 struct virq_handle {
     int virq;
