@@ -124,16 +124,6 @@ static int virq_add(vm_vcpu_t *vcpu, vgic_t *vgic, struct virq_handle *virq_data
     return virq_spi_add(vgic, virq_data);
 }
 
-static void vgic_virq_init(vgic_t *vgic)
-{
-    memset(vgic->virqs, 0, sizeof(vgic->virqs));
-    for (int i = 0; i < CONFIG_MAX_NUM_NODES; i++) {
-        memset(vgic->lr_shadow[i], 0, sizeof(vgic->lr_shadow[i]));
-        vgic->irq_queue[i].head = 0;
-        vgic->irq_queue[i].tail = 0;
-        memset(vgic->irq_queue[i].irqs, 0, sizeof(vgic->irq_queue[i].irqs));
-    }
-}
 
 static inline void vgic_shadow_irq(vgic_t *vgic, int i, struct virq_handle *irq, vm_vcpu_t *vcpu)
 {

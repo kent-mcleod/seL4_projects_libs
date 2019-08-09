@@ -249,7 +249,6 @@ int vm_install_vgic(vm_t *vm)
         assert(!"Unable to calloc memory for VGIC");
         return -1;
     }
-    vgic_virq_init(vgic);
 
     /* Distributor */
     vgic_dist = (struct vgic_dist_device *)calloc(1, sizeof(struct vgic_dist_device));
