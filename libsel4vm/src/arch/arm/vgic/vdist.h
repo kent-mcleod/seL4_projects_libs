@@ -151,14 +151,14 @@ static inline bool is_active(struct gic_dist_map *gic_dist, int irq, int vcpu_id
 static int vgic_dist_enable(struct gic_dist_map *gic_dist)
 {
     DDIST("enabling gic distributor\n");
-    gic_dist->enable = 1;
+    gic_dist_enable(gic_dist);
     return 0;
 }
 
 static int vgic_dist_disable(struct gic_dist_map *gic_dist)
 {
     DDIST("disabling gic distributor\n");
-    gic_dist->enable = 0;
+    gic_dist_disable(gic_dist);
     return 0;
 }
 
@@ -201,7 +201,7 @@ static int vgic_dist_set_pending_irq(vgic_t *vgic, vm_vcpu_t *vcpu, int irq)
     struct gic_dist_map *gic_dist = priv_get_dist(vgic->dist);
     struct virq_handle *virq_data = virq_find_irq_data(vgic, vcpu, irq);
 
-    if (!virq_data || !gic_dist->enable || !is_enabled(gic_dist, irq, vcpu->vcpu_id)) {
+    if (!virq_data || !gic_dist_is_enabled(gic_dist) || !is_enabled(gic_dist, irq, vcpu->vcpu_id)) {
         DDIST("IRQ not enabled (%d) on vcpu %d\n", irq, vcpu->vcpu_id);
         return -1;
     }
@@ -420,7 +420,7 @@ static memory_fault_result_t handle_vgic_dist_write_fault(vm_t *vm, vm_vcpu_t *v
     switch (offset) {
     case RANGE32(GIC_DIST_CTLR, GIC_DIST_CTLR):
         data = fault_get_data(fault);
-        if (data == 1) {
+        if (data == GIC_ENABLED) {
             vgic_dist_enable(gic_dist);
         } else if (data == 0) {
             vgic_dist_disable(gic_dist);
