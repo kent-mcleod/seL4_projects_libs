@@ -198,7 +198,7 @@ static int vgic_dist_disable_irq(struct gic_dist_map *gic_dist, vm_vcpu_t *vcpu,
 static int vgic_dist_set_pending_irq(vgic_t *vgic, vm_vcpu_t *vcpu, int irq)
 {
     /* STATE c) */
-    struct gic_dist_map *gic_dist = priv_get_dist(vgic->dist);
+    struct gic_dist_map *gic_dist = priv_get_dist(vgic->registers);
     struct virq_handle *virq_data = virq_find_irq_data(vgic, vcpu, irq);
 
     if (!virq_data || !gic_dist_is_enabled(gic_dist) || !is_enabled(gic_dist, irq, vcpu->vcpu_id)) {
@@ -254,7 +254,7 @@ static memory_fault_result_t handle_vgic_dist_read_fault(vm_t *vm, vm_vcpu_t *vc
     fault_t *fault = vcpu->vcpu_arch.fault;
     struct vgic_dist_device *d = (struct vgic_dist_device *)cookie;
     struct vgic *vgic = vgic_device_get_vgic(d);
-    struct gic_dist_map *gic_dist = priv_get_dist(vgic->dist);
+    struct gic_dist_map *gic_dist = priv_get_dist(vgic->registers);
     int offset = fault_get_address(fault) - d->pstart;
     int vcpu_id = vcpu->vcpu_id;
     uint32_t reg = 0;
@@ -263,13 +263,13 @@ static memory_fault_result_t handle_vgic_dist_read_fault(vm_t *vm, vm_vcpu_t *vc
     uint32_t *reg_ptr;
     switch (offset) {
     case RANGE32(GIC_DIST_CTLR, GIC_DIST_CTLR):
-        reg = gic_dist->enable;
+        reg = gic_dist->ctlr;
         break;
     case RANGE32(GIC_DIST_TYPER, GIC_DIST_TYPER):
-        reg = gic_dist->ic_type;
+        reg = gic_dist->typer;
         break;
     case RANGE32(GIC_DIST_IIDR, GIC_DIST_IIDR):
-        reg = gic_dist->dist_ident;
+        reg = gic_dist->iidr;
         break;
     case RANGE32(0x00C, 0x01C):
         /* Reserved */
@@ -355,17 +355,19 @@ static memory_fault_result_t handle_vgic_dist_read_fault(vm_t *vm, vm_vcpu_t *vc
         reg_offset = GIC_DIST_REGN(offset, GIC_DIST_ICFGR0);
         reg = gic_dist->config[reg_offset];
         break;
+#ifdef GIC_V2
     case RANGE32(0xD00, 0xDE4):
         base_reg = (uintptr_t) & (gic_dist->spi[0]);
         reg_ptr = (uint32_t *)(base_reg + (offset - 0xD00));
         reg = *reg_ptr;
         break;
+#endif
     case RANGE32(0xDE8, 0xEFC):
         /* Reserved [0xDE8 - 0xE00) */
         /* GIC_DIST_NSACR [0xE00 - 0xF00) - Not supported */
         break;
     case RANGE32(GIC_DIST_SGIR, GIC_DIST_SGIR):
-        reg = gic_dist->sgi_control;
+        reg = gic_dist->sgir;
         break;
     case RANGE32(0xF04, 0xF0C):
         /* Implementation defined */
@@ -381,11 +383,27 @@ static memory_fault_result_t handle_vgic_dist_read_fault(vm_t *vm, vm_vcpu_t *vc
     case RANGE32(0xF30, 0xFBC):
         /* Reserved */
         break;
+#ifdef GIC_V2
     case RANGE32(0xFC0, 0xFFB):
         base_reg = (uintptr_t) & (gic_dist->periph_id[0]);
         reg_ptr = (uint32_t *)(base_reg + (offset - 0xFC0));
         reg = *reg_ptr;
         break;
+#endif
+#ifdef GIC_V3
+    case RANGE32(0x6100, 0x7F00):
+        base_reg = (uintptr_t) & (gic_dist->irouter[0]);
+        reg_ptr = (uint32_t *)(base_reg + (offset - 0x6100));
+        reg = *reg_ptr;
+        break;
+
+    case RANGE32(0xFFD0, 0xFFFC):
+        base_reg = (uintptr_t) & (gic_dist->pidrn[0]);
+        reg_ptr = (uint32_t *)(base_reg + (offset - 0xFFD0));
+        reg = *reg_ptr;
+        break;
+#endif
+
     default:
         ZF_LOGE("Unknown register offset 0x%x\n", offset);
         err = ignore_fault(fault);
@@ -410,7 +428,7 @@ static memory_fault_result_t handle_vgic_dist_write_fault(vm_t *vm, vm_vcpu_t *v
     fault_t *fault = vcpu->vcpu_arch.fault;
     struct vgic_dist_device *d = (struct vgic_dist_device *)cookie;
     struct vgic *vgic = vgic_device_get_vgic(d);
-    struct gic_dist_map *gic_dist = priv_get_dist(vgic->dist);
+    struct gic_dist_map *gic_dist = priv_get_dist(vgic->registers);
     int offset = fault_get_address(fault) - d->pstart;
     int vcpu_id = vcpu->vcpu_id;
     uint32_t reg = 0;
@@ -570,8 +588,14 @@ static memory_fault_result_t handle_vgic_dist_write_fault(vm_t *vm, vm_vcpu_t *v
         break;
     case RANGE32(0xFC0, 0xFFB):
         break;
+#ifdef GIC_V3
+    case RANGE32(0x6100, 0x7F00):
+        data = fault_get_data(fault);
+        ZF_LOGF_IF(data, "bad dist: 0x%x 0x%x", offset, data);
+        break;
+#endif
     default:
-        ZF_LOGE("Unknown register offset 0x%x\n", offset);
+        ZF_LOGE("Unknown register offset 0x%x, value: 0x%x\n", offset, fault_get_data(fault));
     }
 ignore_fault:
     err = ignore_fault(fault);

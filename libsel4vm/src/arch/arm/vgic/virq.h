@@ -53,7 +53,7 @@ typedef struct vgic {
     struct virq_handle *sgi_ppi_irq[CONFIG_MAX_NUM_NODES][NUM_SGI_VIRQS + NUM_PPI_VIRQS];
     struct virq_handle *virqs[MAX_VIRQS];
 /// Virtual distributor registers
-    struct gic_dist_map *dist;
+    void *registers;
 } vgic_t;
 
 int vgic_vcpu_load_list_reg(vgic_t *vgic, vm_vcpu_t *vcpu, int idx, struct virq_handle *irq);
