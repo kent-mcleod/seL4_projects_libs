@@ -55,7 +55,7 @@ file(
 list(
     APPEND
         sources
-        src/arch/${KernelArch}/vgic/vgic.c
+        src/arch/${KernelArch}/vgic/vgic_v2.c
 )
 
 add_library(sel4vm STATIC EXCLUDE_FROM_ALL ${sources})
