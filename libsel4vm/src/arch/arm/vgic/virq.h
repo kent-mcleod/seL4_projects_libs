@@ -56,7 +56,7 @@ typedef struct vgic {
     struct gic_dist_map *dist;
 } vgic_t;
 
-
+int vgic_vcpu_load_list_reg(vgic_t *vgic, vm_vcpu_t *vcpu, int idx, struct virq_handle *irq);
 
 static inline struct vgic *vgic_device_get_vgic(struct vgic_dist_device *d)
 {
