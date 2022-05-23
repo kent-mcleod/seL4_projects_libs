@@ -52,11 +52,12 @@ file(
         src/sel4_arch/${KernelSel4Arch}/*.c
 )
 
-list(
-    APPEND
-        sources
-        src/arch/${KernelArch}/vgic/vgic_v2.c
-)
+if(KernelPlatformImx8mm-evk)
+    list(APPEND sources src/arch/arm/vgic/vgic_v3.c)
+else()
+    # currently every other supported core uses the gicv2.
+    list(APPEND sources src/arch/arm/vgic/vgic_v2.c)
+endif()
 
 add_library(sel4vm STATIC EXCLUDE_FROM_ALL ${sources})
 target_include_directories(
