@@ -47,6 +47,14 @@ int handle_psci(vm_vcpu_t *vcpu, seL4_UserContext *regs, seL4_Word fn_number, bo
         uintptr_t target_cpu = smc_get_arg(regs, 1);
         uintptr_t entry_point_address = smc_get_arg(regs, 2);
         uintptr_t context_id = smc_get_arg(regs, 3);
+
+        if (vcpu->vm->is_multikernel) {
+            ZF_LOGF_IF(!vcpu->vm->run.send_message_callback, "Invalid VM state");
+            vcpu->vm->run.send_message_callback(vcpu->vm->vm_id, target_cpu, START_CORE, entry_point_address, vcpu->vm->run.send_message_callback_cookie);
+            smc_set_return_value(regs, PSCI_SUCCESS);
+            break;
+        }
+
         vm_vcpu_t *target_vcpu = vm_vcpu_for_target_cpu(vcpu->vm, target_cpu);
         if (target_vcpu == NULL) {
             target_vcpu = vm_find_free_unassigned_vcpu(vcpu->vm);

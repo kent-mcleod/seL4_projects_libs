@@ -52,6 +52,16 @@ typedef memory_fault_result_t (*unhandled_mem_fault_callback_fn)(vm_t *vm, vm_vc
  */
 typedef int (*notification_callback_fn)(vm_t *vm, seL4_Word badge, seL4_MessageInfo_t tag,
                                         void *cookie);
+enum message_types {
+    NULL_MESSAGE = 0,
+    START_CORE, // 1
+    INJECT_SGI, // 2
+    REMOTE_ENABLE_IRQ, // 3
+    maxMessageID
+};
+
+typedef void (*send_message_callback_fn)(int src_id, int dst_id, uint32_t type, uint32_t value,
+                                        void *cookie);
 
 /***
  * @struct vm_ram_region
@@ -155,6 +165,8 @@ struct vm_run {
     int exit_reason;
     notification_callback_fn notification_callback;
     void *notification_callback_cookie;
+    send_message_callback_fn send_message_callback;
+    void *send_message_callback_cookie;
 };
 
 /***
@@ -190,6 +202,8 @@ struct vm {
     /* Architecture specfic vm structure */
     struct vm_arch arch;
     /* vm vcpus */
+    bool is_multikernel;
+    int num_multikernel_vcpus;
     unsigned int num_vcpus;
     struct vm_vcpu *vcpus[CONFIG_MAX_NUM_NODES];
     /* vm memory management */
@@ -253,4 +267,16 @@ int vm_register_unhandled_mem_fault_callback(vm_t *vm, unhandled_mem_fault_callb
  * @return                                                      0 on success, -1 on error
  */
 int vm_register_notification_callback(vm_t *vm, notification_callback_fn notification_callback,
+                                      void *cookie);
+
+/***
+ * @function vm_register_multikernel_send_message_callback(vm, num_cores, send_message_callback, cookie)
+ * Register a callback for sending VMM events to remote cores (in a multikernel setup)
+ * @param {vm_t *} vm                                           A handle to the VM
+ * @param {int} num_cpus                                        Total number of CPUs
+ * @param {notification_callback_fn} notification_callback      A user supplied callback to process unhandled notifications
+ * @param {void *} cookie                                       A cookie to supply to the callback
+ * @return                                                      0 on success, -1 on error
+ */
+int vm_register_multikernel_send_message_callback(vm_t *vm, int vcpu_id, int num_cpus, send_message_callback_fn send_message_callback,
                                       void *cookie);

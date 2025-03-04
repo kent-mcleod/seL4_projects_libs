@@ -207,8 +207,10 @@ static int vgic_dist_set_pending_irq(vgic_t *vgic, vm_vcpu_t *vcpu, int irq)
 
     struct virq_handle *virq_data = virq_find_irq_data(vgic, vcpu, irq);
 
-    if (!virq_data || !vgic->dist->enable || !is_enabled(vgic->dist, irq, vcpu->vcpu_id)) {
-        DDIST("IRQ not enabled (%d) on vcpu %d\n", irq, vcpu->vcpu_id);
+    // TODO: Deal with vdist state synchronization between cores
+    // if (!virq_data || !vgic->dist->enable || !is_enabled(vgic->dist, irq, vcpu->vcpu_id)) {
+    if (!virq_data || !is_enabled(vgic->dist, irq, vcpu->vcpu_id)) {
+        ZF_LOGE("IRQ not enabled (%d) on vcpu %d\n", irq, vcpu->vcpu_id);
         return -1;
     }
 
@@ -462,7 +464,17 @@ static memory_fault_result_t vgic_dist_reg_write(vm_t *vm, vm_vcpu_t *vcpu,
             irq = CTZ(data);
             data &= ~(1U << irq);
             irq += (offset - GIC_DIST_ISENABLER0) * 8;
-            vgic_dist_enable_irq(vgic, vcpu, irq);
+            if (irq < 32 || !vm->is_multikernel) {
+                // Local interrupt
+                vgic_dist_enable_irq(vgic, vcpu, irq);
+            } else {
+                if (vm->vm_id != 0) {
+                    ZF_LOGF_IF(!vm->run.send_message_callback, "Invalid VM state");
+                    vm->run.send_message_callback(vm->vm_id, 0, REMOTE_ENABLE_IRQ, irq, vm->run.send_message_callback_cookie);
+                } else {
+                    vgic_dist_enable_irq(vgic, vcpu, irq);
+                }
+            }
         }
         break;
     case RANGE32(GIC_DIST_ICENABLER0, GIC_DIST_ICENABLERN):
@@ -557,12 +569,26 @@ static memory_fault_result_t vgic_dist_reg_write(vm_t *vm, vm_vcpu_t *vcpu,
             ZF_LOGE("Unknow SGIR Target List Filter mode");
             goto ignore_fault;
         }
-        for (int i = 0; i < vcpu->vm->num_vcpus; i++) {
-            vm_vcpu_t *target_vcpu = vcpu->vm->vcpus[i];
-            if (!(target_list & (1 << i)) || !is_vcpu_online(target_vcpu)) {
-                continue;
+        
+        if (vm->is_multikernel) {
+            for (int i = 0; i < vcpu->vm->num_multikernel_vcpus; i++) {
+                if (i == vcpu->vm->vm_id) {
+                    continue;
+                }
+                if (target_list & BIT(i)) {
+                    ZF_LOGF_IF(!vcpu->vm->run.send_message_callback, "Invalid VM state");
+                    vcpu->vm->run.send_message_callback(vcpu->vm->vm_id, i, INJECT_SGI, virq, vcpu->vm->run.send_message_callback_cookie);
+                }
             }
-            vm_inject_irq(target_vcpu, virq);
+        } else {
+            for (int i = 0; i < vcpu->vm->num_vcpus; i++) {
+                vm_vcpu_t *target_vcpu = vcpu->vm->vcpus[i];
+                if (!(target_list & (1 << i)) || !is_vcpu_online(target_vcpu)) {
+                    continue;
+                }
+                vm_inject_irq(target_vcpu, virq);
+
+            }
         }
         break;
     case RANGE32(0xF04, 0xF0C):

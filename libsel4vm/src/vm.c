@@ -51,3 +51,21 @@ int vm_register_notification_callback(vm_t *vm, notification_callback_fn notific
     vm->run.notification_callback_cookie = cookie;
     return 0;
 }
+
+int vm_register_multikernel_send_message_callback(vm_t *vm, int vcpu_id, int num_cpus, send_message_callback_fn send_message_callback,
+                                      void *cookie) {
+    if (!vm) {
+        ZF_LOGE("Failed to register send_message callback: Invalid VM handle");
+        return -1;
+    }
+
+    if (!send_message_callback) {
+        ZF_LOGE("Failed to register send_message callback: Invalid callback");
+        return -1;
+    }
+    vm->run.send_message_callback = send_message_callback;
+    vm->run.send_message_callback_cookie = cookie;
+    vm->is_multikernel = true;
+    vm->num_multikernel_vcpus = num_cpus;
+    return 0;
+}

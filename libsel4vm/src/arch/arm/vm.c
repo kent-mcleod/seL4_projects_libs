@@ -173,12 +173,15 @@ int vcpu_start(vm_vcpu_t *vcpu)
 #else
     vmpidr_reg = seL4_VCPUReg_VMPIDR;
 #endif
-    if (vcpu->vcpu_id == BOOT_VCPU) {
-        /*  VMPIDR Bit Assignments [G8.2.167, Arm Architecture Reference Manual Armv8]
-         * - BIT(24): Performance of PEs (processing element) at the lowest affinity level is very interdependent
-         * - BIT(31): This implementation includes the ARMv7 Multiprocessing Extensions functionality
-         */
-        vmpidr_val = BIT(24) | BIT(31);
+    if (vcpu->vm->is_multikernel) {
+        vmpidr_val = BIT(31) | vcpu->vm->vm_id;
+
+    } else if (vcpu->vcpu_id == BOOT_VCPU) {
+            /*  VMPIDR Bit Assignments [G8.2.167, Arm Architecture Reference Manual Armv8]
+             * - BIT(24): Performance of PEs (processing element) at the lowest affinity level is very interdependent
+             * - BIT(31): This implementation includes the ARMv7 Multiprocessing Extensions functionality
+             */
+            vmpidr_val = BIT(24) | BIT(31);
     } else {
         vmpidr_val = vcpu->target_cpu;
     }

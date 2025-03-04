@@ -98,7 +98,7 @@ int handle_vgic_maintenance(vm_vcpu_t *vcpu, int idx)
 }
 
 
-static void vgic_dist_reset(struct vgic_dist_device *d)
+static void vgic_dist_reset(struct vgic_dist_device *d, vm_t *vm)
 {
     struct gic_dist_map *gic_dist;
     gic_dist = vgic_priv_get_dist(d);
@@ -129,11 +129,18 @@ static void vgic_dist_reset(struct vgic_dist_device *d)
     gic_dist->config[14]      = 0x55555555;
     gic_dist->config[15]      = 0x55555555;
 
+    // Set the affinity a bit special here to handle multikernel vs non-multikernel configs
+    int aff = 0;
+    if (vm->is_multikernel) {
+        aff = vm->vm_id;
+        ZF_LOGF_IF(CONFIG_MAX_NUM_NODES > 1, "Invalid configuration");
+    }
+
     /* Configure per-processor SGI/PPI target registers */
-    for (int i = 0; i < CONFIG_MAX_NUM_NODES; i++) {
+    for (int i = 0; i < CONFIG_MAX_NUM_NODES; i++, aff = i) {
         for (int j = 0; j < ARRAY_SIZE(gic_dist->targets0[i]); j++) {
             for (int irq = 0; irq < sizeof(uint32_t); irq++) {
-                gic_dist->targets0[i][j] |= ((1 << i) << (irq * 8));
+                gic_dist->targets0[i][j] |= ((1 << aff) << (irq * 8));
             }
         }
     }
@@ -260,7 +267,7 @@ int vm_install_vgic(vm_t *vm)
     vm_memory_reservation_t *vgic_dist_res = vm_reserve_memory_at(vm, GIC_DIST_PADDR, PAGE_SIZE_4K,
                                                                   handle_vgic_dist_fault, (void *)vgic_dist);
     vgic_dist->vgic = vgic;
-    vgic_dist_reset(vgic_dist);
+    vgic_dist_reset(vgic_dist, vm);
 
     /* Remap VCPU to CPU */
     vm_memory_reservation_t *vgic_vcpu_reservation = vm_reserve_memory_at(vm, GIC_CPU_PADDR, PAGE_SIZE_4K,
@@ -290,6 +297,16 @@ int vm_vgic_maintenance_handler(vm_vcpu_t *vcpu)
     }
     return VM_EXIT_HANDLED;
 }
+
+int vm_enable_irq(vm_vcpu_t *vcpu, int irq) {
+    struct gic_dist_map *gic_dist = vgic_priv_get_dist(vgic_dist);
+    vgic_t *vgic = vgic_dist->vgic;
+    assert(vgic);
+    vgic_vcpu_t *vgic_vcpu = get_vgic_vcpu(vgic, vcpu->vcpu_id);
+    assert(vgic_vcpu);
+    vgic_dist_enable_irq(vgic, vcpu, irq);
+}
+
 
 const struct vgic_dist_device dev_vgic_dist = {
     .pstart = GIC_DIST_PADDR,
