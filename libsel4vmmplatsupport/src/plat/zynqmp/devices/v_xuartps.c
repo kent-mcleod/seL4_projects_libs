@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #include <sel4vm/guest_irq_controller.h>
 #include <sel4vm/guest_vcpu_fault.h>
@@ -61,8 +62,23 @@ struct zynq_uart_regs {
     uint32_t flowdel;       /* 0x38 Flow Control Delay Register */
     uint32_t pad[2];
     uint32_t txwm;          /* 0x44 Transmitter FIFO Trigger Level Register */
+    // Below this line is private device state not accessible by guest.
+    // In multikernel mode this state is shared between multiple supervisors
+    // The lock variable is used as a spinlock and requires multiple clients
+    // to be on mutual exclusive cores.
+    uint32_t pad2[0x22];
+    uint32_t lock;
+    // The _Atomic variables ensure stores, loads and incremental operators
+    // happen atomically and with the necessaring store and load ordering.
+    _Atomic uint32_t tx_in;
+    _Atomic uint32_t tx_out;
+    _Atomic uint32_t rx_in;
+    _Atomic uint32_t rx_out;
+    // Buffers for holding circular queues for implementing fifos
+    uint32_t rx_buf[VUART_BUFLEN];
+    uint32_t tx_buf[VUART_BUFLEN];
 };
-typedef volatile struct zynq_uart_regs zynq_uart_regs_t;
+typedef struct zynq_uart_regs zynq_uart_regs_t;
 
 #define UART_SR_RTRIG           BIT( 0)
 #define UART_SR_REMPTY          BIT( 1)
@@ -106,12 +122,104 @@ struct vuart_priv {
 };
 
 static struct vuart_priv *vuart_data;
-static ringbuffer_t *send_ring;
-static ringbuffer_t *recv_ring;
 
 static inline void *vuart_priv_get_regs(struct device *d)
 {
     return ((struct vuart_priv *)d->priv)->regs;
+}
+
+// For when this device is shared across an SMP vm where
+// its data can be accessed in parallel we use a spin lock
+static inline void vuart_lock(struct vuart_priv *v) {
+    zynq_uart_regs_t *uart_regs = v->regs;
+    pthread_spin_lock(&uart_regs->lock);
+}
+
+static inline void vuart_unlock(struct vuart_priv *v) {
+    zynq_uart_regs_t *uart_regs = v->regs;
+    pthread_spin_unlock(&uart_regs->lock);
+}
+
+static inline bool vuart_rx_count(struct vuart_priv *v) {
+    zynq_uart_regs_t *r = v->regs;
+    return (r->rx_in - r->rx_out);
+
+}
+
+
+static inline bool vuart_rx_full(struct vuart_priv *v) {
+    return vuart_rx_count(v) == VUART_BUFLEN;
+
+}
+
+static inline bool vuart_rx_empty(struct vuart_priv *v) {
+    zynq_uart_regs_t *r = v->regs;
+    return (r->rx_in == r->rx_out);
+}
+
+
+static inline void vuart_rx_push(struct vuart_priv *v, char c) {
+    // Single sender, multi receiver
+    zynq_uart_regs_t *r = v->regs;
+    if (vuart_rx_full(v)) {
+        return;
+    }
+    r->rx_buf[r->rx_in%VUART_BUFLEN] = c;
+    // _Atomic store new value + 1.
+    r->rx_in = r->rx_in + 1;
+
+}
+
+static inline char vuart_rx_pop(struct vuart_priv *v) {
+    // single sender, multi receiver
+    zynq_uart_regs_t *r = v->regs;
+    if (vuart_rx_empty(v)) {
+        return 0;
+    }
+    char c = r->rx_buf[r->rx_out%VUART_BUFLEN];
+    // _Atomic store new value + 1.
+    r->rx_out = r->rx_out + 1;
+
+    return c;
+
+}
+
+static inline size_t vuart_tx_count(struct vuart_priv *v) {
+    zynq_uart_regs_t *r = v->regs;
+    return (r->tx_in - r->tx_out);
+}
+
+static inline bool vuart_tx_full(struct vuart_priv *v) {
+    return vuart_tx_count(v) == VUART_BUFLEN;
+}
+
+static inline bool vuart_tx_empty(struct vuart_priv *v) {
+    zynq_uart_regs_t *r = v->regs;
+    return (r->tx_in == r->tx_out);
+}
+
+
+static inline void vuart_tx_push(struct vuart_priv *v, char c) {
+    zynq_uart_regs_t *r = v->regs;
+    if (vuart_tx_full(v)) {
+        return;
+    }
+    r->tx_buf[r->tx_in%VUART_BUFLEN] = c;
+    // _Atomic store new value + 1.
+    r->tx_in = r->tx_in + 1;
+}
+
+static inline char vuart_tx_pop(struct vuart_priv *v) {
+
+    zynq_uart_regs_t *r = v->regs;
+    if (vuart_tx_empty(v)) {
+        return 0;
+    }
+    char c = r->tx_buf[r->tx_out%VUART_BUFLEN];
+    // _Atomic store new value + 1.
+    r->tx_out = r->tx_out + 1;
+
+    return c;
 }
 
 static void vuart_data_reset(struct device *d)
@@ -149,7 +257,13 @@ static void vuart_ack(vm_vcpu_t *vcpu, int irq, void *cookie)
 {
     struct vuart_priv *vuart_data = cookie;
     zynq_uart_regs_t *uart_regs = (zynq_uart_regs_t *)vuart_data->regs;
-    if (uart_regs->isr & uart_regs->imr) {
+
+    // Deliver another interrupt if the interrupt status is still active
+    vuart_lock(vuart_data);
+    bool another_irq = uart_regs->isr & uart_regs->imr;
+    vuart_unlock(vuart_data);
+
+    if (another_irq) {
         /* Another IRQ occured */
         vm_inject_irq(vuart_data->vm->vcpus[BOOT_VCPU], vuart_data->virq);
     } else {
@@ -157,40 +271,38 @@ static void vuart_ack(vm_vcpu_t *vcpu, int irq, void *cookie)
     }
 }
 
-static void vuart_inject_irq(struct vuart_priv *vuart)
-{
-    if (vuart->int_pending == 0) {
-        vuart->int_pending = 1;
-        vm_inject_irq(vuart->vm->vcpus[BOOT_VCPU], vuart->virq);
-    }
-}
 
 void vuart_handle_irq(int c)
 {
     zynq_uart_regs_t *uart_regs = (zynq_uart_regs_t *)vuart_data->regs;
 
-    rb_transmit_byte(send_ring, (unsigned char)c);
+    // Push character into virtual fifo and inject VM interrupt
+    vuart_rx_push(vuart_data, (unsigned char)c);
 
-    if (!rb_has_data(recv_ring)) {
-        uart_regs->isr |= UART_ISR_RTRIG;
-        vuart_inject_irq(vuart_data);
+    vuart_lock(vuart_data);
+    uart_regs->isr |= UART_ISR_RTRIG;
+    vuart_unlock(vuart_data);
+
+    // Inject irq if not IRQ already pending
+    if (vuart_data->int_pending == 0) {
+        vuart_data->int_pending = 1;
+        vm_inject_irq(vuart_data->vm->vcpus[BOOT_VCPU], vuart_data->virq);
     }
 }
 
-static void flush_vconsole_device(struct device *d)
+static void flush_vconsole_device(struct vuart_priv *vuart_data)
 {
-    struct vuart_priv *vuart_data;
     char *buf;
 
-    vuart_data = (struct vuart_priv *)d->priv;
-    assert(d->priv);
-    buf = vuart_data->buffer;
-
-    for (int i = 0; i < vuart_data->buf_pos; i++) {
-        vuart_data->callback(buf[i]);
+    // Flush pending tx fifo data.
+    // If no callback is registerd, the data is thrown away.
+    size_t count = vuart_tx_count(vuart_data);
+    for (int i = 0; i < count; i++) {
+        char c = vuart_tx_pop(vuart_data);
+        if (vuart_data->callback) {
+            vuart_data->callback(c);
+        }
     }
-
-    vuart_data->buf_pos = 0;
 }
 
 static void vuart_putchar(struct device *d, char c)
@@ -200,17 +312,32 @@ static void vuart_putchar(struct device *d, char c)
     zynq_uart_regs_t *uart_regs = (zynq_uart_regs_t *)vuart_priv_get_regs(d);
     vuart_data = (struct vuart_priv *)d->priv;
 
-    assert(vuart_data->buf_pos < VUART_BUFLEN);
-    vuart_data->buffer[vuart_data->buf_pos++] = c;
+    // Push tx char onto the fifo. In a multikernel system multiple cores
+    // could be writing to the tx fifo concurrently, so place a critical
+    // section here.
+    vuart_lock(vuart_data);
+    vuart_tx_push(vuart_data, (unsigned char)c);
+    vuart_unlock(vuart_data);
 
     /* We flush after every character is sent instead of only at newlines. This is so typing in characters on the
      * console doesn't look weird. This can be slow when displaying a lot of information quickly.
      *
      * We could probably implement some SW timeout that flushes every so often if there is data available.
      */
-    flush_vconsole_device(d);
+    // In multikernel case, only vm_id==0 has a synchronous interface to a hardware serial. On other cores,
+    // a message + ipi needs to be transmitted to vmm for vm_id==0 to flush the buffer.
+    if (!vuart_data->vm->is_multikernel || vuart_data->vm->vm_id == 0) {
+        flush_vconsole_device(vuart_data);
+    } else {
+        ZF_LOGF_IF(!vuart_data->vm->run.send_message_callback, "Invalid VM state");
+        vuart_data->vm->run.send_message_callback(vuart_data->vm->vm_id, 0, FLUSH_TX_QUEUE, 0, vuart_data->vm->run.send_message_callback_cookie);
+    }
+}
 
-    vuart_inject_irq(vuart_data);
+// Callback for flushing a buffer called in an IPI message handler for messages from other cores.
+void vuart_flush_tx(void) {
+    flush_vconsole_device(vuart_data);
+
 }
 
 static memory_fault_result_t handle_vuart_fault(vm_t *vm, vm_vcpu_t *vcpu, uintptr_t fault_addr, size_t fault_length,
@@ -224,6 +351,7 @@ static memory_fault_result_t handle_vuart_fault(vm_t *vm, vm_vcpu_t *vcpu, uintp
     UNUSED uint32_t v;
     UNUSED int data;
     zynq_uart_regs_t *uart_regs;
+    struct vuart_priv *vuart_data = dev->priv;
 
     uart_regs = (zynq_uart_regs_t *)vuart_priv_get_regs(dev);
 
@@ -242,7 +370,9 @@ static memory_fault_result_t handle_vuart_fault(vm_t *vm, vm_vcpu_t *vcpu, uintp
         switch (offset) {
         case SR:
             data = 0;
-            if (rb_has_data(recv_ring)) {
+            // Check if any characters available.
+            // This doesn't need to be in a critical section.
+            if (vuart_rx_count(vuart_data) == 0) {
                 data |= UART_SR_REMPTY;
             }
             data |= UART_SR_TEMPTY;
@@ -252,11 +382,18 @@ static memory_fault_result_t handle_vuart_fault(vm_t *vm, vm_vcpu_t *vcpu, uintp
             set_vcpu_fault_data(vcpu, uart_regs->isr);
             break;
         case FIFO:
-            if (!rb_has_data(recv_ring)) {
-                data = rb_receive_byte(recv_ring);
-                set_vcpu_fault_data(vcpu, data);
+            data = 0;
+            // Use critical section to pull from RX fifo
+            // multiple cores could be reading at same time.
+            vuart_lock(vuart_data);
+            size_t count = vuart_rx_count(vuart_data);
+            if (count > 0) {
+                data = vuart_rx_pop(vuart_data);
             }
-            if (rb_has_data(recv_ring)) {
+            vuart_unlock(vuart_data);
+            set_vcpu_fault_data(vcpu, data);
+            // If count was 1 then there is no more characters
+            if (count == 1) {
                 uart_regs->isr &= ~UART_ISR_RTRIG;
             }
             break;
@@ -271,19 +408,29 @@ static memory_fault_result_t handle_vuart_fault(vm_t *vm, vm_vcpu_t *vcpu, uintp
         case IER:
             /* Set bits get set in Interrupt Mask */
             v = (get_vcpu_fault_data(vcpu) & mask);
+            // Lock updates so they are atomic
+            vuart_lock(vuart_data);
             uart_regs->imr |= v;
+            vuart_unlock(vuart_data);
             break;
         case IDR:
             /* Set bits get cleared in Interrupt Mask */
             v = ~(get_vcpu_fault_data(vcpu) & mask);
+            // Lock updates so they are atomic
+            vuart_lock(vuart_data);
             uart_regs->imr &= v;
+            vuart_unlock(vuart_data);
             break;
         case ISR:
             /* Only clear set bits */
+            data = get_vcpu_fault_data(vcpu);
+            // Lock updates so they are atomic
+            vuart_lock(vuart_data);
             v = uart_regs->isr & ~mask;
-            v &= ~(get_vcpu_fault_data(vcpu)& mask);
+            v &= ~(data& mask);
             v |= UART_ISR_TEMPTY;
             uart_regs->isr = v;
+            vuart_unlock(vuart_data);
             break;
         case BAUDGEN:
         case RXTOUT:
@@ -295,21 +442,29 @@ static memory_fault_result_t handle_vuart_fault(vm_t *vm, vm_vcpu_t *vcpu, uintp
         case MR:
         case TXWM:
             /* Blindly write to the device */
+            data = get_vcpu_fault_data(vcpu);
+            // Lock updates so they are atomic
+            vuart_lock(vuart_data);
             v = *reg & ~mask;
-            v |= get_vcpu_fault_data(vcpu) & mask;
+            v |= data & mask;
             *reg = v;
+            vuart_unlock(vuart_data);
             break;
         case FIFO:
             vuart_putchar(dev, get_vcpu_fault_data(vcpu));
             break;
         case CR:
+            data = get_vcpu_fault_data(vcpu);
+            // Lock updates so they are atomic
+            vuart_lock(vuart_data);
             v = *reg & ~mask;
-            v |= get_vcpu_fault_data(vcpu) & mask;
+            v |= data & mask;
             /* Always make sure self clearing bits are cleared
              * since we don't actually let the VM control the UART
              */
             v &= ~(UART_CR_SELF_CLEARING_BITS);
             *reg = v;
+            vuart_unlock(vuart_data);
             break;
         default:
             return FAULT_IGNORE;
@@ -359,10 +514,19 @@ int vm_install_vconsole(vm_t *vm, print_func_t func)
     vuart_data->int_pending = 0;
     vuart_data->callback = func;
 
-    vuart_data->regs = calloc(1, UART_SIZE);
-    if (vuart_data->regs == NULL) {
-        assert(vuart_data->regs);
-        return -1;
+    if (vm->is_multikernel) {
+        // Going to do things differently.
+        // Share the memory for regs from the shared buffer between VMs.
+        ZF_LOGF_IF(vm->iq_shared_buf_size < 0x1000, "Not enough shared mem available");
+        vuart_data->regs = vm->iq_shared_buf;
+        vm->iq_shared_buf_size -= 0x1000;
+        vm->iq_shared_buf += 0x1000;
+    } else {
+        vuart_data->regs = calloc(1, sizeof(zynq_uart_regs_t));
+        if (vuart_data->regs == NULL) {
+            assert(vuart_data->regs);
+            return -1;
+        }
     }
 
     vm_memory_reservation_t *reservation = vm_reserve_memory_at(vm, d->pstart, d->size,
@@ -373,19 +537,15 @@ int vm_install_vconsole(vm_t *vm, print_func_t func)
 
     d->priv = vuart_data;
 
-    vuart_data_reset(d);
+    // If on multikernel, reset the register state only if first vmid
+    if (!vm->is_multikernel || vm->vm_id == 0) {
+        vuart_data_reset(d);
 
-    /* Initialise virtual IRQ */
-    vuart_data->virq = VCONSOLE_IRQ;
-    err = vm_register_irq(vm->vcpus[BOOT_VCPU], VCONSOLE_IRQ, &vuart_ack, vuart_data);
-    ZF_LOGF_IF(err, "Failed to initialize vconsole virq\n");
-
-    /* Initialize input ring buffer */
-    void *ring_buf_base = (char *)malloc(sizeof(char) * VUART_BUFLEN);
-    ZF_LOGF_IF(NULL == ring_buf_base, "Failed to initialize input ring buffer\n");
-
-    send_ring = rb_new(ring_buf_base, VUART_BUFLEN);
-    recv_ring = rb_new(ring_buf_base, VUART_BUFLEN);
+        /* Initialise virtual IRQ */
+        vuart_data->virq = VCONSOLE_IRQ;
+        err = vm_register_irq(vm->vcpus[BOOT_VCPU], VCONSOLE_IRQ, &vuart_ack, vuart_data);
+        ZF_LOGF_IF(err, "Failed to initialize vconsole virq\n");
+    }
 
     once = 1;
 

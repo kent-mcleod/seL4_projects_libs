@@ -57,6 +57,7 @@ enum message_types {
     START_CORE, // 1
     INJECT_SGI, // 2
     REMOTE_ENABLE_IRQ, // 3
+    FLUSH_TX_QUEUE, // 4
     maxMessageID
 };
 

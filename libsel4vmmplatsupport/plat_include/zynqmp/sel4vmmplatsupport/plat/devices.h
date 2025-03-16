@@ -24,4 +24,5 @@ extern const struct device dev_uart1;
 typedef void (*print_func_t)(int);
 
 int vm_install_vconsole(vm_t *vm, print_func_t func);
+void vuart_flush_tx(void);
 void vuart_handle_irq(int c);
