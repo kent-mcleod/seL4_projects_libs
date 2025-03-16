@@ -204,6 +204,8 @@ struct vm {
     /* vm vcpus */
     bool is_multikernel;
     int num_multikernel_vcpus;
+    void *iq_shared_buf;
+    size_t iq_shared_buf_size;
     unsigned int num_vcpus;
     struct vm_vcpu *vcpus[CONFIG_MAX_NUM_NODES];
     /* vm memory management */
@@ -274,9 +276,11 @@ int vm_register_notification_callback(vm_t *vm, notification_callback_fn notific
  * Register a callback for sending VMM events to remote cores (in a multikernel setup)
  * @param {vm_t *} vm                                           A handle to the VM
  * @param {int} num_cpus                                        Total number of CPUs
+ * @param size_t iq_buf_size                                    Additional shared memory allocated
+ * @param void * iq_buf_addr
  * @param {notification_callback_fn} notification_callback      A user supplied callback to process unhandled notifications
  * @param {void *} cookie                                       A cookie to supply to the callback
  * @return                                                      0 on success, -1 on error
  */
-int vm_register_multikernel_send_message_callback(vm_t *vm, int vcpu_id, int num_cpus, send_message_callback_fn send_message_callback,
-                                      void *cookie);
+int vm_register_multikernel_send_message_callback(vm_t *vm, int vcpu_id, int num_cpus, size_t iq_buf_size, void* iq_buf_addr,
+                                                  send_message_callback_fn send_message_callback, void *cookie);
